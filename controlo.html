@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controlo dos conectores · PoC</title>
+<style>
+  body { font-family:system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; background:#fbfaf6; color:#14213d; margin:0; padding:32px; }
+  h1 { font-size:28px; margin:0 0 4px; } .sub { color:#52514e; margin:0 0 24px; }
+  .ficticio { color:#c03030; font-weight:700; }
+  .grelha { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:20px; }
+  .cartao { background:#fff; border:1px solid #d8d3c6; border-radius:14px; padding:20px; }
+  .cartao h2 { margin:0 0 6px; font-size:22px; }
+  .estado { display:inline-block; padding:6px 14px; border-radius:16px; color:#fff; font-weight:700; margin:8px 0; }
+  .botoes { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+  button { font:600 14px system-ui, Arial, sans-serif; border:1px solid #c9c4b8; background:#f4f1ea; border-radius:8px; padding:8px 12px; cursor:pointer; }
+  label { display:flex; gap:8px; align-items:center; font-size:15px; margin-top:6px; }
+  .meta { font-size:13px; color:#6b7280; }
+  #lig { font-size:14px; padding:8px 12px; background:#eaf2fc; border-radius:8px; display:inline-block; margin-bottom:20px; }
+</style>
+</head>
+<body>
+<h1>Controlo dos conectores do posto de demonstração</h1>
+<p class="sub">Faz de emulador da PoC de GD: publica o estado de cada conector a cada 5 s. <span class="ficticio">Dados fictícios.</span></p>
+<div id="lig">a ligar ao broker…</div>
+<div class="grelha" id="grelha"></div>
+<p class="meta" style="margin-top:24px">Para simular uma falha de comunicação, marque “comunicação cortada”: deixam de sair mensagens e, passado o tempo do aviso
+(5 min, ou o valor de <code>?aviso=</code> no telemóvel), o painel de RA mostra “sem dados recentes”.</p>
+
+<script src="js/config.js"></script>
+<script src="js/painel.js"></script>
+<script src="js/estado.js"></script>
+<script>
+(async function () {
+  const cfg = window.CONFIG, ids = cfg.alvos;
+  const ESTADOS = ["livre", "reservado", "ocupado", "avariado", "desconhecido"];
+  const atual = {}, cortado = {}, ultimoEnvio = {};
+  for (const id of ids) {
+    let d = {}; try { d = await (await fetch(`dados/${id}.json`)).json(); } catch (e) {}
+    atual[id] = d.estado_inicial || "livre"; cortado[id] = false;
+    const c = document.createElement("div"); c.className = "cartao"; c.innerHTML = `
+      <h2>${id} · ${d.nome || ""}</h2><div class="meta">${d.tipo || ""} ${d.kw || ""} kW · ${d.operador || ""}</div>
+      <div class="estado" id="est-${id}"></div>
+      <div class="botoes">${ESTADOS.map((e) => `<button data-id="${id}" data-e="${e}">${e}</button>`).join("")}</div>
+      <label><input type="checkbox" data-corte="${id}"> comunicação cortada (deixa de enviar)</label>
+      <div class="meta" id="meta-${id}"></div>`;
+    document.getElementById("grelha").appendChild(c);
+  }
+  const pintar = () => ids.forEach((id) => {
+    const el = document.getElementById("est-" + id); el.textContent = atual[id].toUpperCase(); el.style.background = Painel.COR[atual[id]];
+    const t = ultimoEnvio[id]; document.getElementById("meta-" + id).textContent =
+      cortado[id] ? "sem envios (comunicação cortada)" : t ? `último envio há ${Math.round((Date.now() - t) / 1000)} s` : "";
+  });
+  const lig = await Estado.ligar(ids, (id, m) => {
+    // aceita mudanças feitas no telemóvel ("Marcar avaria / reparação")
+    if (m && m.origem === "tecnico" && m.estado) { atual[id] = m.estado; pintar(); }
+  }, (s, txt) => { document.getElementById("lig").textContent =
+      s === "ligado" ? `ligado a ${txt}` : s === "simulado" ? `sem broker (${txt}): o telemóvel não vai receber estes estados` : txt; }, atual);
+  const enviar = (id) => { if (cortado[id]) return; lig.publicar(id, { estado: atual[id], ts: Date.now(), origem: "emulador" }); ultimoEnvio[id] = Date.now(); };
+  document.querySelectorAll("button[data-e]").forEach((b) => b.onclick = () => { atual[b.dataset.id] = b.dataset.e; enviar(b.dataset.id); pintar(); });
+  document.querySelectorAll("[data-corte]").forEach((cb) => cb.onchange = () => { cortado[cb.dataset.corte] = cb.checked; pintar(); });
+  ids.forEach(enviar);
+  setInterval(() => { ids.forEach(enviar); pintar(); }, 5000);
+  setInterval(pintar, 1000);
+  pintar();
+})();
+</script>
+</body>
+</html>

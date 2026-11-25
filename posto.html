@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Posto · RA · Gémeo Digital (PoC)</title>
+<style>
+  html, body { margin:0; height:100%; background:#111; font-family:system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color:#f3f1ea; overflow:hidden; }
+  #topo { position:fixed; top:0; left:0; right:0; z-index:20; display:flex; gap:8px; align-items:center; padding:10px 12px; background:rgba(17,17,17,.72); font-size:14px; }
+  #topo .estado { flex:1; line-height:1.25; }
+  #topo .ficticio { color:#ff8a8a; font-weight:700; }
+  button { font:600 15px system-ui, Arial, sans-serif; border:0; border-radius:10px; padding:10px 14px; background:#f3f1ea; color:#111; }
+  button.sec { background:#3a3a3a; color:#f3f1ea; }
+  button.perigo { background:#d03b3b; color:#fff; }
+  #aviso { position:fixed; left:12px; right:12px; bottom:16px; z-index:20; background:#fbeaea; color:#5c1111; border-radius:12px; padding:12px 14px; font-size:15px; display:none; }
+  #aviso button { margin-top:8px; }
+  #movel, #fixo { position:fixed; inset:0; z-index:15; overflow:auto; background:#1b1b1b; padding:70px 12px 24px; box-sizing:border-box; display:none; }
+  #fixo { z-index:30; background:rgba(17,17,17,.94); }
+  #movel canvas, #fixo canvas { display:block; width:100%; max-width:480px; height:auto; margin:0 auto; }
+  .abas { display:flex; gap:8px; justify-content:center; margin:0 auto 12px; max-width:480px; }
+  .abas button.ativa { background:#256abf; color:#fff; }
+  .acoes { display:flex; gap:8px; justify-content:center; margin:14px auto 0; max-width:480px; flex-wrap:wrap; }
+  .nota { max-width:480px; margin:10px auto 0; font-size:13px; color:#b9b6ae; text-align:center; }
+  #cena { position:fixed; inset:0; }
+</style>
+</head>
+<body>
+<div id="topo">
+  <div class="estado"><span class="ficticio">DADOS FICTÍCIOS</span> · <span id="info">a preparar…</span></div>
+  <button id="btFixar" class="sec" style="display:none">Fixar painel</button>
+  <button id="btModo" class="sec">Ver sem RA</button>
+</div>
+<div id="cena"></div>
+<div id="aviso"><span id="avisoTxt"></span><br><button id="btAvisoMovel">Ver sem RA</button></div>
+<div id="movel"><div class="abas" id="abas"></div><canvas id="cvMovel"></canvas>
+  <div class="acoes"><button class="perigo" data-acao="avariado">Marcar avaria</button><button data-acao="livre">Marcar reparação</button></div>
+  <p class="nota">Vista sem RA (plano B): o mesmo painel, sem estar ancorado ao posto.</p></div>
+<div id="fixo"><canvas id="cvFixo"></canvas>
+  <div class="acoes"><button class="perigo" data-acao="avariado">Marcar avaria</button><button data-acao="livre">Marcar reparação</button><button id="btSoltar" class="sec">Voltar à câmara</button></div></div>
+<div id="paineis" style="display:none"></div>
+
+<script src="js/config.js"></script>
+<script src="js/painel.js"></script>
+<script src="js/estado.js"></script>
+<script>
+(async function () {
+  const cfg = window.CONFIG;
+  const q = new URLSearchParams(location.search);
+  const idPedido = (q.get("id") || cfg.alvos[0]).toUpperCase();
+  const avisoSeg = +(q.get("aviso") || cfg.avisoSeg);
+  const ids = [...new Set([...cfg.alvos, idPedido])];
+  const $ = (s) => document.querySelector(s);
+  const info = (t) => ($("#info").textContent = t);
+
+  // 1) dados agregados de cada conector (JSON gerado a partir dos CSV)
+  const dados = {};
+  for (const id of ids) {
+    try { dados[id] = await (await fetch(`dados/${id}.json`)).json(); } catch (e) { console.warn("sem dados", id); }
+  }
+  if (!dados[idPedido]) { info(`conector ${idPedido} desconhecido`); return; }
+
+  // 2) um canvas por conector (textura na RA)
+  const cv = {};
+  ids.forEach((id) => { const c = document.createElement("canvas"); c.id = "painel-" + id; c.width = Painel.W; c.height = Painel.H; $("#paineis").appendChild(c); cv[id] = c; });
+
+  // 3) estado em tempo real
+  const ultimo = {}; let statusLig = "a ligar…", simulado = false, offline = false;
+  const inicial = Object.fromEntries(ids.map((id) => [id, dados[id] && dados[id].estado_inicial]));
+  let modo = q.get("modo") === "movel" ? "movel" : "ra";
+  let idMovel = idPedido, idFixo = null, ultimoAlvo = null;
+
+  function vivo(id) {
+    const u = ultimo[id];
+    const idade = u ? (Date.now() - u.ts) / 1000 : null;
+    return { estado: u ? u.estado : inicial[id] || "desconhecido", idadeSeg: idade, alerta: idade == null || idade > avisoSeg, simulado, offline };
+  }
+  function redesenhar() {
+    ids.forEach((id) => { if (!dados[id]) return;
+      const prob = Painel.desenhar(cv[id], dados[id], vivo(id));
+      const plano = document.getElementById("plano-" + id);
+      const m = plano && plano.getObject3D("mesh");
+      if (m && m.material && m.material.map) m.material.map.needsUpdate = true;
+      const halo = document.getElementById("halo-" + id);
+      if (halo) halo.setAttribute("visible", prob);
+    });
+    if (modo === "movel") Painel.desenhar($("#cvMovel"), dados[idMovel], vivo(idMovel));
+    if (idFixo) Painel.desenhar($("#cvFixo"), dados[idFixo], vivo(idFixo));
+  }
+  redesenhar();
+
+  const lig = await Estado.ligar(ids, (id, m) => { if (m && m.estado) { ultimo[id] = { estado: m.estado, ts: m.ts || Date.now() }; redesenhar(); } },
+    (s, txt) => { statusLig = s === "ligado" ? "ligado ao broker" : s === "simulado" ? `modo simulado (${txt})` : txt; simulado = s === "simulado"; offline = s === "offline"; atualizarInfo(); },
+    inicial);
+  setInterval(redesenhar, 1000);
+
+  function atualizarInfo() { info(`${modo === "ra" ? "RA" : "sem RA"} · ${statusLig}`); }
+  document.querySelectorAll("[data-acao]").forEach((b) => b.addEventListener("click", () => {
+    const id = idFixo || idMovel;
+    lig.publicar(id, { estado: b.dataset.acao, ts: Date.now(), origem: "tecnico" });
+  }));
+
+  // 4) vista sem RA (plano B)
+  function abrirMovel(motivo) {
+    modo = "movel"; $("#movel").style.display = "block"; $("#aviso").style.display = "none";
+    $("#btModo").textContent = "Voltar à RA"; $("#btFixar").style.display = "none";
+    const abas = $("#abas"); abas.innerHTML = "";
+    ids.filter((id) => dados[id]).forEach((id) => { const b = document.createElement("button"); b.textContent = id; b.className = id === idMovel ? "ativa" : "sec";
+      b.onclick = () => { idMovel = id; abrirMovel(); }; abas.appendChild(b); });
+    if (motivo) statusLig = motivo + " · " + statusLig;
+    atualizarInfo(); redesenhar();
+  }
+  $("#btModo").onclick = () => { if (modo === "movel") location.href = location.pathname + `?id=${idPedido}`; else abrirMovel(); };
+  $("#btAvisoMovel").onclick = () => abrirMovel();
+  $("#btFixar").onclick = () => { idFixo = ultimoAlvo || idPedido; $("#fixo").style.display = "block"; redesenhar(); };
+  $("#btSoltar").onclick = () => { idFixo = null; $("#fixo").style.display = "none"; };
+
+  if (modo === "movel") { abrirMovel(); return; }
+
+  // 5) RA: carregar A-Frame + MindAR e montar a cena
+  try {
+    const r = await fetch("targets.mind", { method: "HEAD" });
+    if (!r.ok) throw new Error("falta targets.mind");
+  } catch (e) { abrirMovel("falta targets.mind (ver README)"); return; }
+  const carregar = (src) => new Promise((ok, erro) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = erro; document.head.appendChild(s); });
+  try {
+    await carregar("https://aframe.io/releases/1.5.0/aframe.min.js");
+    await carregar("https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js");
+  } catch (e) { abrirMovel("bibliotecas de RA indisponíveis"); return; }
+
+  const moldura = (id) => {   // contorno vermelho à volta do autocolante (não tapa o papel)
+    const t = 0.06, s = 1.14;
+    return `<a-entity id="halo-${id}" visible="false">
+      <a-plane width="${s}" height="${t}" position="0 ${s / 2} 0.002" material="shader: flat; color: #d03b3b"></a-plane>
+      <a-plane width="${s}" height="${t}" position="0 ${-s / 2} 0.002" material="shader: flat; color: #d03b3b"></a-plane>
+      <a-plane width="${t}" height="${s}" position="${s / 2} 0 0.002" material="shader: flat; color: #d03b3b"></a-plane>
+      <a-plane width="${t}" height="${s}" position="${-s / 2} 0 0.002" material="shader: flat; color: #d03b3b"></a-plane></a-entity>`;
+  };
+  const alvosHtml = cfg.alvos.map((id, i) => `
+    <a-entity mindar-image-target="targetIndex: ${i}" data-id="${id}">
+      ${moldura(id)}
+      <a-plane id="plano-${id}" width="1" height="${(Painel.H / Painel.W).toFixed(3)}" position="0 ${(0.62 + Painel.H / Painel.W / 2).toFixed(3)} 0"
+               material="shader: flat; src: #painel-${id}; transparent: true"></a-plane>
+    </a-entity>`).join("");
+  $("#cena").innerHTML = `
+    <a-scene mindar-image="imageTargetSrc: targets.mind; maxTrack: ${cfg.alvos.length}; uiLoading: yes; uiScanning: yes; uiError: no"
+             color-space="sRGB" renderer="colorManagement: true; alpha: true" vr-mode-ui="enabled: false"
+             device-orientation-permission-ui="enabled: false" embedded style="width:100%;height:100%">
+      <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+      ${alvosHtml}
+    </a-scene>`;
+  const cena = document.querySelector("a-scene");
+  let encontrou = false;
+  cena.addEventListener("arReady", () => {
+    info("RA · " + statusLig);
+    setTimeout(() => { if (!encontrou) {
+      $("#avisoTxt").textContent = "Não estou a conseguir seguir o autocolante (luz, reflexos ou ângulo). Pode ver os dados sem RA.";
+      $("#aviso").style.display = "block"; } }, cfg.esperaTrackingSeg * 1000);
+  });
+  cena.addEventListener("arError", () => abrirMovel("câmara indisponível"));
+  document.querySelectorAll("[mindar-image-target]").forEach((el) => {
+    el.addEventListener("targetFound", () => { encontrou = true; ultimoAlvo = el.dataset.id; $("#aviso").style.display = "none"; $("#btFixar").style.display = "inline-block"; redesenhar(); });
+  });
+  atualizarInfo();
+})();
+</script>
+</body>
+</html>
