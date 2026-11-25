@@ -44,6 +44,21 @@ for cid, a in grade.items():
         "kwh_semana": round(float(s.kwh.sum() / 4), 0),
     }
 tipo = dict(zip(d0.id, d0.tipo))
+# intervenções (D3), se existirem: as 6 mais recentes de cada conector
+d3p = DADOS / "D3_intervencoes.csv"
+d3 = pd.read_csv(d3p, sep=";", parse_dates=["data_hora"]) if d3p.exists() else None
+def intervencoes(cid):
+    if d3 is None:
+        return []
+    out = []
+    for r in d3[d3.id == cid].sort_values("data_hora", ascending=False).head(6).itertuples():
+        remota = r.tipo == "remota"
+        horas = r.resultado.split("(")[-1].split(" h")[0] if "(" in r.resultado else ""
+        out.append({"data": r.data_hora.strftime("%d/%m"), "hora": r.data_hora.strftime("%H:%M"),
+                    "tipo": "Reinício" if remota else "Avaria", "descricao": r.descricao.replace("de madrugada ", ""),
+                    "resultado": "Sem efeito" if remota else "Reparado",
+                    "detalhe": "remoto" if remota else f"no local · {horas} h"})
+    return out
 ocup_h = {c: (a.reshape(28, 24, 12) == 2).mean(axis=(0, 2)) for c, a in grade.items()}
 
 for _, c in d0.iterrows():
@@ -85,6 +100,7 @@ for _, c in d0.iterrows():
         },
         "perfil": {"este": [round(float(x), 3) for x in ocup_h[cid]], "media": [round(float(x), 3) for x in media]},
         "nota": nota,
+        "intervencoes": intervencoes(cid),
         "estado_inicial": ESTADOS[a[-1]] if a[-1] in (0, 1, 2) else "livre",
         "ficticio": True,
     }
